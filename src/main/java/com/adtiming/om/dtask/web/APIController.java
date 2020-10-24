@@ -4,11 +4,16 @@
 package com.adtiming.om.dtask.web;
 
 import com.adtiming.om.dtask.aws.DcenterJob;
+import com.adtiming.om.dtask.dto.MailSender;
+import com.adtiming.om.dtask.dto.ReportBuilderDTO;
+import com.adtiming.om.dtask.service.ReportBuilderService;
 import com.adtiming.om.dtask.util.Constants;
 import com.adtiming.om.dtask.util.Util;
 import com.alibaba.fastjson.JSONObject;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -36,6 +41,9 @@ public class APIController {
 
     @Resource
     private DcenterJob dcenterJob;
+
+    @Resource
+    private ReportBuilderService reportBuilderService;
 
     /**
      * used for om-server init
@@ -93,7 +101,7 @@ public class APIController {
     public ResponseEntity<?> backfillCommonReport(String beginDateHour, String endDateHour) {
         new Thread(new Runnable() {
             LocalDateTime beginDateTime = LocalDateTime.parse(beginDateHour, Constants.FORMATTER_YYYYMMDDHH);
-            LocalDateTime endDateTime = LocalDateTime.parse(endDateHour, Constants.FORMATTER_YYYYMMDDHH);
+            final LocalDateTime endDateTime = LocalDateTime.parse(endDateHour, Constants.FORMATTER_YYYYMMDDHH);
 
             @Override
             public void run() {
@@ -101,7 +109,6 @@ public class APIController {
                     log.info("backfill common report, beginDateHour: {}, endDateHour: {}, start", beginDateHour, endDateHour);
                     while (beginDateTime.isBefore(endDateTime)) {
                         log.info("backfill common report, deal: {}", beginDateTime);
-                        dcenterJob.addPartition(beginDateTime);
                         dcenterJob.commonReport(beginDateTime);
                         beginDateTime = beginDateTime.plusHours(1);
                     }
@@ -117,14 +124,14 @@ public class APIController {
     /**
      * back fill user report data, hourly within give date (beginDate <= the time  < endDate)
      *
-     * @param beginDate begin date, format: yyyyMMddHH
-     * @param endDate   end date, format: yyyyMMddHH
+     * @param beginDate begin date, format: yyyyMMdd
+     * @param endDate   end date, format: yyyyMMdd
      */
     @RequestMapping("/dc/backfill/user/report")
     public ResponseEntity<?> backfillUserReport(String beginDate, String endDate) {
         new Thread(new Runnable() {
             LocalDate beginLocalDate = LocalDate.parse(beginDate, Constants.FORMATTER_YYYYMMDD);
-            LocalDate endLoaclDate = LocalDate.parse(endDate, Constants.FORMATTER_YYYYMMDD);
+            final LocalDate endLoaclDate = LocalDate.parse(endDate, Constants.FORMATTER_YYYYMMDD);
 
             @Override
             public void run() {
@@ -142,6 +149,64 @@ public class APIController {
             }
         }, "backfillUserReport").start();
         return ResponseEntity.ok("success");
+    }
+
+    /**
+     * back fill user ad revenue data, hourly within give date (beginDate <= the time  < endDate)
+     *
+     * @param beginDate begin date, format: yyyyMMdd
+     * @param endDate   end date, format: yyyyMMdd
+     */
+    @RequestMapping("/dc/backfill/user/ad/revenue")
+    public ResponseEntity<?> backfillUserAdRevenue(String beginDate, String endDate) {
+        new Thread(new Runnable() {
+            LocalDate beginLocalDate = LocalDate.parse(beginDate, Constants.FORMATTER_YYYYMMDD);
+            final LocalDate endLoaclDate = LocalDate.parse(endDate, Constants.FORMATTER_YYYYMMDD);
+
+            @Override
+            public void run() {
+                try {
+                    log.info("backfill user ad revenue, beginDate: {}, endDate: {}, start", beginDate, endDate);
+                    while (beginLocalDate.isBefore(endLoaclDate)) {
+                        log.info("backfill user ad revenue, deal: {}", beginLocalDate);
+                        dcenterJob.userAdRevenue(beginLocalDate);
+                        beginLocalDate = beginLocalDate.plusDays(1);
+                    }
+                    log.info("backfill user ad revenue, beginDate: {}, endDate: {}, complete", beginDate, endDate);
+                } catch (Exception e) {
+                    log.error("backfill user ad revenue error", e);
+                }
+            }
+        }, "backfillUserAdRevenue").start();
+        return ResponseEntity.ok("success");
+    }
+
+    @GetMapping("/api/customreport/test")
+    public Object customReportTest(long id) {
+        try {
+            ReportBuilderDTO config = reportBuilderService.getReportBuilder(id);
+            if (config == null) {
+                return ResponseEntity.badRequest().body("config not exists");
+            }
+            if (StringUtils.isBlank(config.getRecipients())) {
+                return ResponseEntity.badRequest().body("Empty Recipients");
+            }
+            MailSender mailSender = reportBuilderService.getMailSender();
+            if (mailSender == null) {
+                return ResponseEntity.accepted().body("mailSender not found");
+            }
+            config.setTaskDay(LocalDate.now().plusDays(-1));
+            List<String> reportLines = reportBuilderService.buildReport(config);
+            String result = StringUtils.join(reportLines, '\n');
+            boolean sendStatus = reportBuilderService.sendToUser(config, result, mailSender);
+            if (sendStatus) {
+                return ResponseEntity.ok("OK");
+            }
+            return ResponseEntity.accepted().body("Send Failed");
+        } catch (Exception e) {
+            log.error("customReportTest error", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Test Failed");
+        }
     }
 
 
